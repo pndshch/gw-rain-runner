@@ -163,6 +163,38 @@ canvas { display: block; width: 100%; height: 100%; }
 
 <script type="module">
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// ============================================================
+// BLENDER MODEL CACHE
+// ============================================================
+const blenderModels = {};
+let modelsLoaded = false;
+
+function loadBlenderModels() {
+  return new Promise((resolve) => {
+    const loader = new GLTFLoader();
+    loader.load('scene.glb', (gltf) => {
+      const root = gltf.scene;
+      root.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
+      ['Player', 'StreetLamp', 'Koinobori', 'Umbrella', 'Puddle'].forEach(name => {
+        const obj = root.getObjectByName(name);
+        if (obj) blenderModels[name] = obj;
+      });
+      modelsLoaded = true;
+      console.log('Blender models loaded:', Object.keys(blenderModels));
+      resolve();
+    }, undefined, () => { console.warn('GLB load failed, using procedural'); resolve(); });
+  });
+}
+
+function cloneBlenderModel(name) {
+  const src = blenderModels[name];
+  if (!src) return null;
+  const clone = src.clone(true);
+  clone.traverse(c => { if (c.isMesh && c.material) c.material = c.material.clone(); });
+  return clone;
+}
 
 // ============================================================
 // GLOBALS & CONSTANTS
@@ -257,10 +289,14 @@ function init() {
   document.body.prepend(renderer.domElement);
 
   setupLights();
-  createGround();
-  createClouds();
-  createBgRain();
-  createPlayer();
+
+  // Load Blender models first, then build scene
+  loadBlenderModels().then(() => {
+    createGround();
+    createClouds();
+    createBgRain();
+    createPlayer();
+  });
 
   // Pre-populate
   for (let i = 0; i < 12; i++) spawnRaindrop(-15 - i * 8);
@@ -455,100 +491,52 @@ function createBgRain() {
 function createPlayer() {
   playerGroup = new THREE.Group();
 
-  // Body
-  const bodyGeo = new THREE.CapsuleGeometry(0.32, 0.65, 4, 8);
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3377ee, roughness: 0.35, metalness: 0.1 });
-  const body = new THREE.Mesh(bodyGeo, bodyMat);
-  body.position.y = 0.85;
-  body.castShadow = true;
-  playerGroup.add(body);
-
-  // Head
-  const headGeo = new THREE.SphereGeometry(0.26, 8, 6);
-  const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa, roughness: 0.5 });
-  const head = new THREE.Mesh(headGeo, headMat);
-  head.position.y = 1.52;
-  head.castShadow = true;
-  playerGroup.add(head);
-
-  // Eyes
-  const eyeGeo = new THREE.SphereGeometry(0.045, 6, 4);
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-  for (let side of [-1, 1]) {
-    const eye = new THREE.Mesh(eyeGeo, eyeMat);
-    eye.position.set(side * 0.09, 1.55, 0.21);
-    playerGroup.add(eye);
+  const blenderPlayer = cloneBlenderModel('Player');
+  if (blenderPlayer) {
+    // Blender model: swap Y/Z axes (Blender Z-up → Three.js Y-up)
+    blenderPlayer.rotation.x = -Math.PI / 2;
+    blenderPlayer.traverse(c => {
+      if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; }
+      // Tag legs and arms for animation
+      if (c.name && c.name.startsWith('Leg_')) { c.userData.isLeg = true; c.userData.side = c.name.includes('-1') ? -1 : 1; }
+      if (c.name && c.name.startsWith('Shoe_')) { c.userData.isLeg = true; c.userData.side = c.name.includes('-1') ? -1 : 1; }
+    });
+    playerGroup.add(blenderPlayer);
+  } else {
+    // Procedural fallback
+    const bodyGeo = new THREE.CapsuleGeometry(0.32, 0.65, 4, 8);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3377ee, roughness: 0.35, metalness: 0.1 });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.85; body.castShadow = true; playerGroup.add(body);
+    const headGeo = new THREE.SphereGeometry(0.26, 8, 6);
+    const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa, roughness: 0.5 });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = 1.52; head.castShadow = true; playerGroup.add(head);
+    const eyeGeo = new THREE.SphereGeometry(0.045, 6, 4);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+    for (let side of [-1, 1]) { const eye = new THREE.Mesh(eyeGeo, eyeMat); eye.position.set(side * 0.09, 1.55, 0.21); playerGroup.add(eye); }
+    const mouthGeo = new THREE.TorusGeometry(0.06, 0.015, 4, 6, Math.PI);
+    const mouthMat = new THREE.MeshBasicMaterial({ color: 0x993333 });
+    const mouth = new THREE.Mesh(mouthGeo, mouthMat); mouth.position.set(0, 1.46, 0.22); mouth.rotation.x = 0.2; playerGroup.add(mouth);
+    const legGeo = new THREE.CylinderGeometry(0.09, 0.11, 0.45, 6);
+    const legMat = new THREE.MeshStandardMaterial({ color: 0x2255aa, roughness: 0.5 });
+    for (let side of [-1, 1]) { const leg = new THREE.Mesh(legGeo, legMat); leg.position.set(side * 0.14, 0.22, 0); leg.castShadow = true; leg.userData.isLeg = true; leg.userData.side = side; playerGroup.add(leg); }
+    const shoeGeo = new THREE.BoxGeometry(0.14, 0.08, 0.2);
+    const shoeMat = new THREE.MeshStandardMaterial({ color: 0xcc4400, roughness: 0.6 });
+    for (let side of [-1, 1]) { const shoe = new THREE.Mesh(shoeGeo, shoeMat); shoe.position.set(side * 0.14, 0.02, 0.03); shoe.userData.isLeg = true; shoe.userData.side = side; playerGroup.add(shoe); }
+    const armGeo = new THREE.CylinderGeometry(0.06, 0.07, 0.4, 6);
+    const armMat = new THREE.MeshStandardMaterial({ color: 0x3377ee, roughness: 0.35 });
+    for (let side of [-1, 1]) { const arm = new THREE.Mesh(armGeo, armMat); arm.position.set(side * 0.4, 0.92, 0); arm.rotation.z = side * 0.25; arm.castShadow = true; arm.userData.isArm = true; arm.userData.side = side; playerGroup.add(arm); }
+    const hatGeo = new THREE.ConeGeometry(0.6, 0.22, 12);
+    const hatMat = new THREE.MeshStandardMaterial({ color: 0xdd5533, roughness: 0.25, metalness: 0.15, emissive: 0x331100, emissiveIntensity: 0.1 });
+    const hat = new THREE.Mesh(hatGeo, hatMat); hat.position.y = 1.78; hat.castShadow = true; playerGroup.add(hat);
+    const bandGeo = new THREE.TorusGeometry(0.48, 0.025, 4, 12);
+    const bandMat = new THREE.MeshStandardMaterial({ color: 0xffcc00, roughness: 0.3 });
+    const band = new THREE.Mesh(bandGeo, bandMat); band.position.y = 1.71; band.rotation.x = Math.PI / 2; playerGroup.add(band);
+    const tipGeo = new THREE.SphereGeometry(0.04, 6, 4);
+    const tipMat = new THREE.MeshStandardMaterial({ color: 0xffcc00 });
+    const tip = new THREE.Mesh(tipGeo, tipMat); tip.position.y = 1.9; playerGroup.add(tip);
   }
-
-  // Mouth (simple smile)
-  const mouthGeo = new THREE.TorusGeometry(0.06, 0.015, 4, 6, Math.PI);
-  const mouthMat = new THREE.MeshBasicMaterial({ color: 0x993333 });
-  const mouth = new THREE.Mesh(mouthGeo, mouthMat);
-  mouth.position.set(0, 1.46, 0.22);
-  mouth.rotation.x = 0.2;
-  playerGroup.add(mouth);
-
-  // Legs
-  const legGeo = new THREE.CylinderGeometry(0.09, 0.11, 0.45, 6);
-  const legMat = new THREE.MeshStandardMaterial({ color: 0x2255aa, roughness: 0.5 });
-  for (let side of [-1, 1]) {
-    const leg = new THREE.Mesh(legGeo, legMat);
-    leg.position.set(side * 0.14, 0.22, 0);
-    leg.castShadow = true;
-    leg.userData.isLeg = true;
-    leg.userData.side = side;
-    playerGroup.add(leg);
-  }
-
-  // Shoes
-  const shoeGeo = new THREE.BoxGeometry(0.14, 0.08, 0.2);
-  const shoeMat = new THREE.MeshStandardMaterial({ color: 0xcc4400, roughness: 0.6 });
-  for (let side of [-1, 1]) {
-    const shoe = new THREE.Mesh(shoeGeo, shoeMat);
-    shoe.position.set(side * 0.14, 0.02, 0.03);
-    shoe.userData.isLeg = true;
-    shoe.userData.side = side;
-    playerGroup.add(shoe);
-  }
-
-  // Arms
-  const armGeo = new THREE.CylinderGeometry(0.06, 0.07, 0.4, 6);
-  const armMat = new THREE.MeshStandardMaterial({ color: 0x3377ee, roughness: 0.35 });
-  for (let side of [-1, 1]) {
-    const arm = new THREE.Mesh(armGeo, armMat);
-    arm.position.set(side * 0.4, 0.92, 0);
-    arm.rotation.z = side * 0.25;
-    arm.castShadow = true;
-    arm.userData.isArm = true;
-    arm.userData.side = side;
-    playerGroup.add(arm);
-  }
-
-  // Rain hat (Asian conical umbrella hat)
-  const hatGeo = new THREE.ConeGeometry(0.6, 0.22, 12);
-  const hatMat = new THREE.MeshStandardMaterial({
-    color: 0xdd5533, roughness: 0.25, metalness: 0.15,
-    emissive: 0x331100, emissiveIntensity: 0.1
-  });
-  const hat = new THREE.Mesh(hatGeo, hatMat);
-  hat.position.y = 1.78;
-  hat.castShadow = true;
-  playerGroup.add(hat);
-
-  // Hat band
-  const bandGeo = new THREE.TorusGeometry(0.48, 0.025, 4, 12);
-  const bandMat = new THREE.MeshStandardMaterial({ color: 0xffcc00, roughness: 0.3 });
-  const band = new THREE.Mesh(bandGeo, bandMat);
-  band.position.y = 1.71;
-  band.rotation.x = Math.PI / 2;
-  playerGroup.add(band);
-
-  // Hat tip
-  const tipGeo = new THREE.SphereGeometry(0.04, 6, 4);
-  const tipMat = new THREE.MeshStandardMaterial({ color: 0xffcc00 });
-  const tip = new THREE.Mesh(tipGeo, tipMat);
-  tip.position.y = 1.9;
-  playerGroup.add(tip);
 
   playerGroup.position.set(0, GROUND_Y, 0);
   scene.add(playerGroup);
@@ -758,44 +746,36 @@ function spawnUmbrella(z) {
 // ============================================================
 function spawnStreetLamp(z) {
   const group = new THREE.Group();
-  const poleMat = new THREE.MeshStandardMaterial({ color: 0x445566, roughness: 0.5, metalness: 0.4 });
 
-  // Pole
-  const poleGeo = new THREE.CylinderGeometry(0.07, 0.09, 4.5, 6);
-  const pole = new THREE.Mesh(poleGeo, poleMat);
-  pole.position.y = 2.25;
-  pole.castShadow = true;
-  group.add(pole);
-
-  // Arm
-  const armGeo = new THREE.CylinderGeometry(0.035, 0.035, 1.4, 4);
-  const arm = new THREE.Mesh(armGeo, poleMat);
-  arm.position.set(0.6, 4.2, 0);
-  arm.rotation.z = Math.PI / 2.5;
-  group.add(arm);
-
-  // Light housing
-  const housingGeo = new THREE.CylinderGeometry(0.22, 0.16, 0.18, 8);
-  const housingMat = new THREE.MeshStandardMaterial({
-    color: 0xffeedd, emissive: 0xffaa44, emissiveIntensity: 0.6,
-    roughness: 0.2
-  });
-  const housing = new THREE.Mesh(housingGeo, housingMat);
-  housing.position.set(1.1, 4.1, 0);
-  group.add(housing);
-
-  // Warm cone of light
-  const lampLight = new THREE.SpotLight(0xffaa44, 0.5, 10, Math.PI / 4, 0.6);
-  lampLight.position.set(1.1, 4.0, 0);
-  lampLight.target.position.set(1.1, 0, 0);
-  group.add(lampLight);
-  group.add(lampLight.target);
-
-  // Base
-  const baseGeo = new THREE.CylinderGeometry(0.2, 0.25, 0.15, 8);
-  const base = new THREE.Mesh(baseGeo, poleMat);
-  base.position.y = 0.075;
-  group.add(base);
+  const blenderLamp = cloneBlenderModel('StreetLamp');
+  if (blenderLamp) {
+    blenderLamp.rotation.x = -Math.PI / 2;
+    blenderLamp.scale.setScalar(1.0);
+    group.add(blenderLamp);
+    // Add light
+    const lampLight = new THREE.SpotLight(0xffaa44, 0.5, 10, Math.PI / 4, 0.6);
+    lampLight.position.set(0.6, 3.3, 0);
+    lampLight.target.position.set(0.6, 0, 0);
+    group.add(lampLight);
+    group.add(lampLight.target);
+  } else {
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x445566, roughness: 0.5, metalness: 0.4 });
+    const poleGeo = new THREE.CylinderGeometry(0.07, 0.09, 4.5, 6);
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.y = 2.25; pole.castShadow = true; group.add(pole);
+    const armGeo = new THREE.CylinderGeometry(0.035, 0.035, 1.4, 4);
+    const arm = new THREE.Mesh(armGeo, poleMat);
+    arm.position.set(0.6, 4.2, 0); arm.rotation.z = Math.PI / 2.5; group.add(arm);
+    const housingGeo = new THREE.CylinderGeometry(0.22, 0.16, 0.18, 8);
+    const housingMat = new THREE.MeshStandardMaterial({ color: 0xffeedd, emissive: 0xffaa44, emissiveIntensity: 0.6, roughness: 0.2 });
+    const housing = new THREE.Mesh(housingGeo, housingMat);
+    housing.position.set(1.1, 4.1, 0); group.add(housing);
+    const lampLight = new THREE.SpotLight(0xffaa44, 0.5, 10, Math.PI / 4, 0.6);
+    lampLight.position.set(1.1, 4.0, 0); lampLight.target.position.set(1.1, 0, 0);
+    group.add(lampLight); group.add(lampLight.target);
+    const baseGeo = new THREE.CylinderGeometry(0.2, 0.25, 0.15, 8);
+    const base = new THREE.Mesh(baseGeo, poleMat); base.position.y = 0.075; group.add(base);
+  }
 
   const side = Math.random() > 0.5 ? 1 : -1;
   group.position.set(side * 6.5, GROUND_Y, z || -(15 + Math.random() * 60));
@@ -809,12 +789,23 @@ function spawnStreetLamp(z) {
 function spawnKoinobori(z) {
   const group = new THREE.Group();
 
-  // Pole
+  // Try Blender model
+  const blenderKoi = cloneBlenderModel('Koinobori');
+  if (blenderKoi) {
+    blenderKoi.rotation.x = -Math.PI / 2;
+    blenderKoi.scale.setScalar(1.0);
+    group.add(blenderKoi);
+    // Add procedural streamers/pinwheel for animation
+  }
+
+  // Pole (procedural, always add for animation targets)
   const poleMat = new THREE.MeshStandardMaterial({ color: 0x776644, roughness: 0.6 });
-  const poleGeo = new THREE.CylinderGeometry(0.04, 0.06, 5.5, 6);
-  const pole = new THREE.Mesh(poleGeo, poleMat);
-  pole.position.y = 2.75;
-  group.add(pole);
+  if (!blenderKoi) {
+    const poleGeo = new THREE.CylinderGeometry(0.04, 0.06, 5.5, 6);
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.y = 2.75;
+    group.add(pole);
+  }
 
   // Fukinagashi (streamer) at top
   const streamerColors = [0xff0000, 0x0000ff, 0xffff00, 0x00ff00, 0xffffff];
